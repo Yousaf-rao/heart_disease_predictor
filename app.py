@@ -3,6 +3,149 @@ import pickle
 import numpy as np
 import pandas as pd
 from io import BytesIO
+import datetime
+
+# ─── ReportLab PDF helpers ────────────────────────────────────────────────────
+try:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import cm
+    from reportlab.platypus import (
+        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
+    )
+    REPORTLAB_OK = True
+except ImportError:
+    REPORTLAB_OK = False
+
+
+def generate_pdf_report(patient_info: dict, results: dict) -> bytes:
+    """Build a professional PDF report and return as bytes."""
+    buf = BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4,
+        rightMargin=2*cm, leftMargin=2*cm,
+        topMargin=2*cm, bottomMargin=2*cm
+    )
+    styles = getSampleStyleSheet()
+    RED   = colors.HexColor("#C0392B")
+    GREEN = colors.HexColor("#1E8449")
+    BLUE  = colors.HexColor("#1A5276")
+    LGRAY = colors.HexColor("#F2F3F4")
+
+    title_style = ParagraphStyle(
+        "title", parent=styles["Title"],
+        textColor=BLUE, fontSize=20, spaceAfter=4
+    )
+    sub_style = ParagraphStyle(
+        "sub", parent=styles["Normal"],
+        textColor=colors.grey, fontSize=10, spaceAfter=12
+    )
+    section_style = ParagraphStyle(
+        "section", parent=styles["Heading2"],
+        textColor=BLUE, fontSize=13, spaceBefore=14, spaceAfter=6
+    )
+    normal = styles["Normal"]
+    disclaimer_style = ParagraphStyle(
+        "disclaimer", parent=styles["Normal"],
+        fontSize=8, textColor=colors.grey, leading=11
+    )
+
+    story = []
+
+    # ── Header ────────────────────────────────────────────────────────────────
+    story.append(Paragraph("❤️ CardioAI — Heart Disease Prediction Report", title_style))
+    now = datetime.datetime.now().strftime("%d %B %Y, %I:%M %p")
+    story.append(Paragraph(f"Generated on: {now}", sub_style))
+    story.append(HRFlowable(width="100%", thickness=1.5, color=BLUE))
+    story.append(Spacer(1, 0.3*cm))
+
+    # ── Patient Details ───────────────────────────────────────────────────────
+    story.append(Paragraph("Patient Information", section_style))
+    pat_data = [["Parameter", "Value"]] + [
+        [k, str(v)] for k, v in patient_info.items()
+    ]
+    pat_table = Table(pat_data, colWidths=[8*cm, 9*cm])
+    pat_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), BLUE),
+        ("TEXTCOLOR",  (0, 0), (-1, 0), colors.white),
+        ("FONTNAME",   (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE",   (0, 0), (-1, 0), 11),
+        ("BACKGROUND", (0, 1), (-1, -1), LGRAY),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, LGRAY]),
+        ("GRID",       (0, 0), (-1, -1), 0.4, colors.lightgrey),
+        ("FONTNAME",   (0, 1), (0, -1), "Helvetica-Bold"),
+        ("FONTSIZE",   (0, 1), (-1, -1), 10),
+        ("PADDING",    (0, 0), (-1, -1), 6),
+    ]))
+    story.append(pat_table)
+    story.append(Spacer(1, 0.4*cm))
+
+    # ── Prediction Results ────────────────────────────────────────────────────
+    story.append(Paragraph("Model Predictions", section_style))
+    probs = []
+    res_data = [["Model", "Prediction", "Risk Probability"]]
+    for name, res in results.items():
+        label = "Heart Disease Detected" if res["pred"] == 1 else "No Disease"
+        prob_str = f"{res['prob']:.1f}%" if res["prob"] is not None else "N/A"
+        res_data.append([name, label, prob_str])
+        if res["prob"] is not None:
+            probs.append(res["prob"])
+
+    res_table = Table(res_data, colWidths=[6*cm, 7*cm, 4*cm])
+    res_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), BLUE),
+        ("TEXTCOLOR",  (0, 0), (-1, 0), colors.white),
+        ("FONTNAME",   (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE",   (0, 0), (-1, 0), 11),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, LGRAY]),
+        ("GRID",       (0, 0), (-1, -1), 0.4, colors.lightgrey),
+        ("FONTSIZE",   (0, 1), (-1, -1), 10),
+        ("PADDING",    (0, 0), (-1, -1), 7),
+        ("ALIGN",      (2, 1), (2, -1), "CENTER"),
+    ]))
+    # Color-code disease rows
+    for i, (name, res) in enumerate(results.items(), start=1):
+        c = RED if res["pred"] == 1 else GREEN
+        res_table.setStyle(TableStyle([("TEXTCOLOR", (1, i), (1, i), c)]))
+    story.append(res_table)
+    story.append(Spacer(1, 0.4*cm))
+
+    # ── Risk Summary ─────────────────────────────────────────────────────────
+    if probs:
+        avg = sum(probs) / len(probs)
+        risk_label = "HIGH RISK" if avg >= 50 else "LOW RISK"
+        risk_color = RED if avg >= 50 else GREEN
+        risk_style = ParagraphStyle(
+            "risk", parent=styles["Normal"],
+            textColor=risk_color, fontSize=14,
+            fontName="Helvetica-Bold", spaceAfter=8
+        )
+        story.append(Paragraph("Overall Risk Assessment", section_style))
+        story.append(Paragraph(
+            f"Average Risk Score: {avg:.1f}%  →  {risk_label}", risk_style
+        ))
+
+    story.append(Spacer(1, 0.6*cm))
+    story.append(HRFlowable(width="100%", thickness=0.8, color=colors.lightgrey))
+    story.append(Spacer(1, 0.2*cm))
+
+    # ── Disclaimer ────────────────────────────────────────────────────────────
+    story.append(Paragraph(
+        "⚠️ Disclaimer: This report is generated by an AI-based system for research "
+        "and educational purposes only. It does NOT constitute medical advice. "
+        "Always consult a qualified cardiologist or healthcare professional for "
+        "diagnosis and treatment decisions.",
+        disclaimer_style
+    ))
+    story.append(Spacer(1, 0.2*cm))
+    story.append(Paragraph(
+        "CardioAI • Heart Disease Prediction System • Final Year Project",
+        disclaimer_style
+    ))
+
+    doc.build(story)
+    return buf.getvalue()
 
 # ─── Page Config ─────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -49,11 +192,12 @@ st.title("❤️ CardioAI - Heart Disease Prediction")
 st.caption("Advanced Multi-Model Heart Disease Prediction Dashboard | Final Year Project")
 
 # ─── Tabs ────────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "🔬 Single Prediction",
     "📊 Bulk Prediction",
     "📈 Model Metrics",
     "📉 Data Analysis",
+    "📄 PDF Report",
 ])
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -148,6 +292,27 @@ with tab1:
                 st.error(f"⚠️ Average Risk Score: **{avg_risk:.1f}%** — High risk detected!")
             else:
                 st.success(f"✅ Average Risk Score: **{avg_risk:.1f}%** — Low risk.")
+
+        # ── PDF Download ──────────────────────────────────────────────────────
+        st.divider()
+        if REPORTLAB_OK:
+            patient_info = {
+                "Age": age, "Sex": sex, "Chest Pain Type": chest,
+                "Resting BP (mm Hg)": resting_bp, "Cholesterol (mg/dl)": chol,
+                "Fasting Blood Sugar": fasting, "Resting ECG": ecg,
+                "Max Heart Rate": max_hr, "Exercise Angina": angina,
+                "Oldpeak": oldpeak, "ST Slope": slope,
+            }
+            pdf_bytes = generate_pdf_report(patient_info, results)
+            st.download_button(
+                label="📄 Download PDF Report",
+                data=pdf_bytes,
+                file_name="cardioai_report.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+            )
+        else:
+            st.warning("Install `reportlab` to enable PDF download: `pip install reportlab`")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 2 — BULK PREDICTION
@@ -427,6 +592,77 @@ with tab4:
     st.subheader("📋 Raw Dataset")
     st.dataframe(heart_df, use_container_width=True)
     st.caption(f"Total rows: {len(heart_df)} | Total columns: {len(heart_df.columns)}")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 5 — PDF REPORT
+# ══════════════════════════════════════════════════════════════════════════════
+with tab5:
+    st.header("📄 Generate Patient PDF Report")
+    st.info(
+        "Fill in the **Single Prediction** tab first and click **Run All Models**. "
+        "A **Download PDF Report** button will appear there automatically. \n\n"
+        "You can also generate a quick standalone report here by entering patient data below."
+    )
+
+    if not REPORTLAB_OK:
+        st.error("❌ `reportlab` is not installed. Run: `pip install reportlab`")
+    else:
+        st.subheader("Patient Details")
+        rc1, rc2, rc3 = st.columns(3)
+        with rc1:
+            r_age      = st.number_input("Age", 1, 120, 50, key="r_age")
+            r_sex      = st.selectbox("Sex", list(SEX_MAP.keys()), key="r_sex")
+            r_chest    = st.selectbox("Chest Pain Type", list(CHEST_MAP.keys()), key="r_chest")
+            r_bp       = st.number_input("Resting BP", 50, 250, 120, key="r_bp")
+        with rc2:
+            r_chol     = st.number_input("Cholesterol", 50, 700, 200, key="r_chol")
+            r_fasting  = st.selectbox("Fasting Blood Sugar", list(FASTING_MAP.keys()), key="r_fasting")
+            r_ecg      = st.selectbox("Resting ECG", list(ECG_MAP.keys()), key="r_ecg")
+        with rc3:
+            r_maxhr    = st.number_input("Max Heart Rate", 50, 250, 150, key="r_maxhr")
+            r_angina   = st.selectbox("Exercise Angina", list(ANGINA_MAP.keys()), key="r_angina")
+            r_oldpeak  = st.number_input("Oldpeak", -5.0, 10.0, 1.0, 0.1, key="r_oldpeak")
+            r_slope    = st.selectbox("ST Slope", list(SLOPE_MAP.keys()), key="r_slope")
+
+        if st.button("🖨️ Generate & Download PDF", type="primary", use_container_width=True):
+            r_features = np.array([[
+                r_age, SEX_MAP[r_sex], CHEST_MAP[r_chest], r_bp, r_chol,
+                FASTING_MAP[r_fasting], ECG_MAP[r_ecg], r_maxhr,
+                ANGINA_MAP[r_angina], r_oldpeak, SLOPE_MAP[r_slope],
+            ]])
+            r_results = {}
+            for name, model in models.items():
+                pred = model.predict(r_features)[0]
+                prob = None
+                if hasattr(model, "predict_proba"):
+                    prob = model.predict_proba(r_features)[0][1] * 100
+                r_results[name] = {"pred": int(pred), "prob": prob}
+
+            r_patient_info = {
+                "Age": r_age, "Sex": r_sex, "Chest Pain Type": r_chest,
+                "Resting BP (mm Hg)": r_bp, "Cholesterol (mg/dl)": r_chol,
+                "Fasting Blood Sugar": r_fasting, "Resting ECG": r_ecg,
+                "Max Heart Rate": r_maxhr, "Exercise Angina": r_angina,
+                "Oldpeak": r_oldpeak, "ST Slope": r_slope,
+            }
+            pdf_bytes = generate_pdf_report(r_patient_info, r_results)
+
+            # Show a quick summary
+            st.success("✅ PDF generated! Click below to download.")
+            summ_cols = st.columns(4)
+            for idx2, (mname, mres) in enumerate(r_results.items()):
+                with summ_cols[idx2]:
+                    lbl = "❤️‍🔥 At Risk" if mres["pred"] == 1 else "✅ Healthy"
+                    pb  = f"{mres['prob']:.1f}%" if mres["prob"] else "N/A"
+                    st.metric(mname, lbl, pb)
+
+            st.download_button(
+                label="📥 Download PDF Report",
+                data=pdf_bytes,
+                file_name="cardioai_report.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+            )
 
 # ─── Footer ──────────────────────────────────────────────────────────────────
 st.divider()
